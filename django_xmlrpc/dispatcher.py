@@ -39,10 +39,14 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 """
 from inspect import getargspec
 
+import sys
+
 try:
-    from xmlrpc.server import SimpleXMLRPCDispatcher
+    from xmlrpc.server import SimpleXMLRPCDispatcher, resolve_dotted_attribute
+    from xmlrpc.client import loads, dumps, Fault
 except ImportError:  # Python 2
-    from SimpleXMLRPCServer import SimpleXMLRPCDispatcher
+    from SimpleXMLRPCServer import SimpleXMLRPCDispatcher, resolve_dotted_attribute
+    from xmlrpclib import loads, dumps, Fault
 
 
 class DjangoXMLRPCDispatcher(SimpleXMLRPCDispatcher):
@@ -73,5 +77,99 @@ class DjangoXMLRPCDispatcher(SimpleXMLRPCDispatcher):
             }
 
         return [sig['returns']] + sig['args']
+
+    def _marshaled_dispatch(self, data, dispatch_method=None, path=None, request=None):
+        """Dispatches an XML-RPC method from marshalled (XML) data.
+
+        XML-RPC methods are dispatched from the marshalled (XML) data
+        using the _dispatch method and the result is returned as
+        marshalled data. For backwards compatibility, a dispatch
+        function can be provided as an argument (see comment in
+        SimpleXMLRPCRequestHandler.do_POST) but overriding the
+        existing method through subclassing is the preferred means
+        of changing method dispatch behavior.
+
+        copy from /usr/lib/python2.7/SimpleXMLRPCServer.py to support
+        django request
+        """
+
+        try:
+            params, method = loads(data)
+
+            # generate response
+            if dispatch_method is not None:
+                response = dispatch_method(method, params, request)
+            else:
+                response = self._dispatch(method, params, request)
+            # wrap response in a singleton tuple
+            response = (response,)
+            response = dumps(response, methodresponse=1,
+                             allow_none=self.allow_none, encoding=self.encoding)
+        except Fault as fault:
+            response = dumps(fault, allow_none=self.allow_none,
+                             encoding=self.encoding)
+        except:
+            # report exception back to server
+            exc_type, exc_value, exc_tb = sys.exc_info()
+            response = dumps(
+                Fault(1, "%s:%s" % (exc_type, exc_value)),
+                encoding=self.encoding, allow_none=self.allow_none,
+            )
+
+        return response
+
+    def _dispatch(self, method, params, request=None):
+        """Dispatches the XML-RPC method.
+
+        XML-RPC calls are forwarded to a registered function that
+        matches the called XML-RPC method name. If no such function
+        exists then the call is forwarded to the registered instance,
+        if available.
+
+        If the registered instance has a _dispatch method then that
+        method will be called with the name of the XML-RPC method and
+        its parameters as a tuple
+        e.g. instance._dispatch('add',(2,3))
+
+        If the registered instance does not have a _dispatch method
+        then the instance will be searched to find a matching method
+        and, if found, will be called.
+
+        Methods beginning with an '_' are considered private and will
+        not be called.
+
+        copy from /usr/lib/python2.7/SimpleXMLRPCServer.py to support
+        django request
+        """
+
+        func = None
+        try:
+            # check to see if a matching function has been registered
+            func = self.funcs[method]
+        except KeyError:
+            if self.instance is not None:
+                # check for a _dispatch method
+                if hasattr(self.instance, '_dispatch'):
+                    return self.instance._dispatch(method, params)
+                else:
+                    # call instance method directly
+                    try:
+                        func = resolve_dotted_attribute(
+                            self.instance,
+                            method,
+                            self.allow_dotted_names
+                        )
+                    except AttributeError:
+                        pass
+
+        if func is not None:
+            try:
+                return func(request, *params)
+            except TypeError:
+                # try without request
+                return func(*params)
+        else:
+            raise Exception('method "%s" is not supported' % method)
+
 
 xmlrpc_dispatcher = DjangoXMLRPCDispatcher(allow_none=False, encoding=None)

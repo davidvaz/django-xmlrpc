@@ -65,7 +65,8 @@ def handle_xmlrpc(request):
         try:
             response = HttpResponse(content_type='text/xml')
             response.write(
-                xmlrpc_dispatcher._marshaled_dispatch(request.body))
+                xmlrpc_dispatcher._marshaled_dispatch(request.body,
+                                                      request=request))
             logger.debug(response)
             return response
         except:
